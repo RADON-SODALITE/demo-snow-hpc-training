@@ -1,0 +1,6 @@
+.venv/
+.env/
+.opera/
+
+modules/
+artifacts/

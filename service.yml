@@ -1,0 +1,123 @@
+tosca_definitions_version: tosca_simple_yaml_1_3
+
+# TODO: imports to RADON node types shall be added
+imports:
+  - modules/hpc/torque/main.yml
+  - modules/hpc/image-puller/main.yml
+  - modules/hpc/modak/job/main.yml
+
+topology_template:
+
+  inputs:
+    frontend-address:
+      type: string
+    user:
+      type: string
+    key-location:
+      type: string
+    email:
+      type: string
+    images-location:
+      type: string
+    modak-endpoint:
+      type: string
+    skyline-extraction-test-training-job-script:
+      type: string
+
+  node_templates:
+
+    hpc-wm-torque:
+      type: sodalite.nodes.hpc.wm.torque
+      attributes:
+        public_address: { get_input: frontend-address }
+        username: { get_input: user }
+        ssh-key: { get_input: key-location }
+
+    modak-instance:
+      type: sodalite.nodes.modak
+      properties:
+        endpoint: { get_input: modak-endpoint }
+
+### image pulling
+    tensorflow-image:
+      type: sodalite.image_puller.singularity
+      properties:
+        image: "tensorflow/tensorflow:1.11.0-gpu"
+        registry: "docker"
+        images_location: "/mnt/nfs/home/kamil/singularity_images"
+      requirements:
+        - host: hpc-wm-torque
+
+### modak job parameters
+    skyline-extraction-test-training-modak-job:
+      type: sodalite.nodes.modak.job
+      properties:
+        job_script: { get_input: skyline-extraction-test-training-job-script }
+        job_options:
+          combine_stdout_stderr: true
+          email_address: "tokmakov@hlrs.de"
+          job_name: "skyline-extraction-training"
+          node_count: 1
+          process_count_per_node: 20
+          request_gpus: 1
+          request_event_notification: "abe"
+          standard_error_file: "skyline-extraction-training.err"
+          standard_output_file: "skyline-extraction-training.out"
+          wall_time_limit: "1:00:00"
+        application:
+          app_tag: "skyline-extraction-training"
+          app_type: "python"
+          container_runtime: "tensorflow/tensorflow:1.11.0-gpu"
+          executable: "python peaklens-original-training_opt.py"
+        target:
+          name: "hlrs_testbed"
+          queue_type: "torque"
+        optimisation: {}
+      requirements:
+        - modak_endpoint: modak-instance
+        - dependency: tensorflow-image
+
+
+# -- Starting a transmission of dataset from S3 to GridFTP server  -- #
+    
+    # TODO: node types and instances shall be added
+
+# -- End of transmission of dataset from S3 to GridFTP server -- #
+
+
+### job configs
+    skyline-extraction-test-training-job-config:
+      type: sodalite.nodes.hpc.job.torque.preconfigured
+      properties:
+        name: skyline-extraction-training
+        script: { get_input: skyline-extraction-test-training-job-script }
+        workspace: ~/SkylineExtraction-training
+        enable_audit: true
+        env:
+          SINGULARITY_DIR: /mnt/nfs/home/kamil/singularity_images
+      requirements:
+        - host: hpc-wm-torque
+        - dependency: skyline-extraction-test-training-modak-job
+        # TODO: add dependency for data transfer
+
+### job workflow
+    skyline-extraction-test-training-job:
+      type: sodalite.nodes.hpc.job.torque
+      requirements:
+        - host: hpc-wm-torque
+        - configured_job: skyline-extraction-test-training-job-config
+
+### job result
+    skyline-extraction-test-training-job-result:
+      type: sodalite.nodes.hpc.job.torque.result
+      requirements:
+        - host: hpc-wm-torque
+        - job: skyline-extraction-test-training-job
+
+
+# -- Starting a transmission of results from GridFTP server to S3 -- #
+    
+    # TODO: node types and instances shall be added
+    # TODO: job results dependencies should be added
+
+# -- End of transmission of results from GridFTP server to S3 -- #
