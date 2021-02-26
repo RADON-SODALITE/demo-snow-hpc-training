@@ -1,7 +1,18 @@
-frontend-address:
-user:
-key-location:
-email:
-images-location:
-modak-endpoint:
-skyline-extraction-test-training-job-script:
+# egi inputs
+snow-ssh-key-name:
+snow-ssh-public-key:
+snow-image-name:
+openstack-network-name:
+openstack-floating-ip-pool:
+snow-security-groups:
+snow-flavor-name:
+snow-vm-username:
+os-env:
+  checkin_env:
+    CHECKIN_CLIENT_ID:
+    CHECKIN_CLIENT_SECRET:
+    CHECKIN_REFRESH_TOKEN:
+    EGI_SITE:
+
+hlrs-frontend-address:
+hlrs-username:

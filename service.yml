@@ -1,123 +1,316 @@
 tosca_definitions_version: tosca_simple_yaml_1_3
 
-# TODO: imports to RADON node types shall be added
 imports:
-  - modules/hpc/torque/main.yml
-  - modules/hpc/image-puller/main.yml
-  - modules/hpc/modak/job/main.yml
+  - sodalite/hpc/app/apps.yml
+  - sodalite/hpc/app/workflows.yml
+  - sodalite/openstack/openstack_keypair.yaml
+  - sodalite/openstack/openstack_security_rule.yaml
+  - sodalite/openstack/openstack_vm.yaml
+  - radon/_definitions/radonnodesnifi__Nifi.tosca
+  - radon/_definitions/radonrelationshipsdatapipeline__ConnectNifiLocal.tosca
+  - radon/_definitions/radonnodesdatapipelinesource__ConsS3Bucket.tosca
+  - radon/_definitions/radonnodesdatapipelinedestination__PublishGridFtp.tosca
+  - radon/_definitions/radonnodesdatapipelinedestination__PubsS3Bucket.tosca
+  - radon/_definitions/radonnodesdatapipelinesource__ConsumeGridFtp.tosca
 
 topology_template:
 
   inputs:
-    frontend-address:
+
+    snow-ssh-key-name:  
+      type: string 
+    snow-ssh-public-key:  
+      type: string 
+    snow-image-name:  
+      type: string 
+    openstack-network-name:  
+      type: string 
+    openstack-floating-ip-pool:  
+      type: string 
+    snow-security-groups:  
+      type: string    
+    snow-flavor-name:  
       type: string
-    user:
+    snow-vm-username:
+      type: string 
+    os-env:
+      type: map 
+
+    hlrs-frontend-address:
       type: string
-    key-location:
-      type: string
-    email:
-      type: string
-    images-location:
-      type: string
-    modak-endpoint:
-      type: string
-    skyline-extraction-test-training-job-script:
+    hlrs-username:
       type: string
 
   node_templates:
 
-    hpc-wm-torque:
-      type: sodalite.nodes.hpc.wm.torque
+    snow-keypair:
+      type: sodalite.nodes.OpenStack.Keypair
+      properties:  
+        name: { get_input: snow-ssh-key-name } 
+        public_key: { get_input: snow-ssh-public-key } 
+        env: { get_input: os-env } 
+
+    snow-gridftp-security-rules:  
+      type: sodalite.nodes.OpenStack.SecurityRules 
+      properties:  
+        ports:  
+          ssh:  
+            protocol: tcp 
+            remote_ip_prefix: 0.0.0.0/0 
+            port_range_min: 22 
+            port_range_max: 22
+          gridftp-control:  
+            protocol: tcp 
+            remote_ip_prefix: 0.0.0.0/0 
+            port_range_min: 2811 
+            port_range_max: 2811 
+            direction: egress
+          gridftp-data:  
+            port_range_min: 50000 
+            port_range_max: 50100 
+            protocol: tcp 
+            remote_ip_prefix: 0.0.0.0/0 
+            direction: egress
+        group_name:  snow-gridftp
+        group_description:  Snow UC security group 
+        env: { get_input: os-env } 
+
+    snow-vm-gridftp:  
+      type: sodalite.nodes.OpenStack.VM 
+      properties:  
+        name:  snow-vm-gridftp
+        key_name:         { get_input: snow-ssh-key-name } 
+        image:            { get_input: snow-image-name }
+        network:          { get_input: openstack-network-name } 
+        security_groups:  { get_input: snow-security-groups } 
+        flavor:           { get_input: snow-flavor-name }
+        username:         { get_input: snow-vm-username }
+        include_exporter: false
+        timeout: 666
+        floating_ip_pools: { get_input: openstack-floating-ip-pool } 
+        env: { get_input: os-env } 
+      requirements:  
+        - protected_by: snow-gridftp-security-rules
+        - dependency: snow-keypair
+
+    # NiFi instance
+    Nifi_0:
+      type: radon.nodes.nifi.Nifi
+      metadata:
+        x: "643"
+        y: "325"
+        displayName: "Nifi"
+      properties:
+        port: 8080
+        component_version: "1.12.1"
+      requirements:
+        - host:
+            node: snow-vm-gridftp
+            relationship: con_HostedOn_0
+            capability: host
+
+    PublishGridFtp_0:
+      type: radon.nodes.datapipeline.destination.PublishGridFtp
+      metadata:
+        x: "1009"
+        y: "183"
+        displayName: "PublishGridFtp"
+      properties:
+        gridftp_port: 2811
+        intermediate_folder: "/tmp/nifi_gridftp_publish/"
+        schedulingStrategy: "EVENT_DRIVEN"
+        schedulingPeriodCRON: "* * * * * ?"
+        name: "sendTogridFTP"
+        gridftp_user: "kamil"
+        gridftp_host: "sodalite-fe.hlrs.de"
+        gridftp_cert_path: "/home/kml/.globus"
+        gridftp_directory: "~/radon-training/"
+      requirements:
+        - host:
+            node: Nifi_0
+            relationship: con_HostedOn_2
+            capability: host
+
+    ConsS3Bucket_0:
+      type: radon.nodes.datapipeline.source.ConsS3Bucket
+      metadata:
+        x: "327"
+        y: "178"
+        displayName: "ConsS3Bucket"
+      properties:
+        BucketName: "kml-test-bucket"
+        cred_file_path: "/home/kml/.aws/nifi_credentials"
+        schedulingStrategy: "EVENT_DRIVEN"
+        schedulingPeriodCRON: "* * * * * ?"
+        name: "listenFromS3"
+        Region: "eu-central-1"
+      requirements:
+        - connectToPipeline:
+            node: PublishGridFtp_0
+            relationship: con_ConnectNifiLocal_0
+            capability: ConnectToPipeline
+        - host:
+            node: Nifi_0
+            relationship: con_HostedOn_1
+            capability: host
+
+
+    hlrs-testbed:
+      type: sodalite.nodes.hpc.WM
+      properties:
+        scheduler: torque
+        username: { get_input: hlrs-username }
       attributes:
-        public_address: { get_input: frontend-address }
-        username: { get_input: user }
-        ssh-key: { get_input: key-location }
+        public_address: { get_input: hlrs-frontend-address }
+      capabilities:
+        resources:
+          properties:
+            gpus: 5 
+            cpus: 200
+            memory: 650687
+        optimisations:
+          properties:
+            target: hlrs_testbed # same as in modak db
 
-    modak-instance:
-      type: sodalite.nodes.modak
+    batch-app-runtime-hpc:
+      type: sodalite.nodes.batch.Container.Runtime
       properties:
-        endpoint: { get_input: modak-endpoint }
-
-### image pulling
-    tensorflow-image:
-      type: sodalite.image_puller.singularity
-      properties:
-        image: "tensorflow/tensorflow:1.11.0-gpu"
-        registry: "docker"
-        images_location: "/mnt/nfs/home/kamil/singularity_images"
+        runtime: "singularity"
+        images_location: "images"
       requirements:
-        - host: hpc-wm-torque
+        - host: hlrs-testbed
 
-### modak job parameters
-    skyline-extraction-test-training-modak-job:
-      type: sodalite.nodes.modak.job
+    snow-training-app:
+      type: sodalite.nodes.batch.Container.Application
       properties:
-        job_script: { get_input: skyline-extraction-test-training-job-script }
-        job_options:
-          combine_stdout_stderr: true
-          email_address: "tokmakov@hlrs.de"
-          job_name: "skyline-extraction-training"
-          node_count: 1
-          process_count_per_node: 20
-          request_gpus: 1
-          request_event_notification: "abe"
-          standard_error_file: "skyline-extraction-training.err"
-          standard_output_file: "skyline-extraction-training.out"
-          wall_time_limit: "1:00:00"
-        application:
-          app_tag: "skyline-extraction-training"
-          app_type: "python"
-          container_runtime: "tensorflow/tensorflow:1.11.0-gpu"
-          executable: "python peaklens-original-training_opt.py"
-        target:
-          name: "hlrs_testbed"
-          queue_type: "torque"
-        optimisation: {}
+        app_tag: "snow-training-app"
+        app_type: "python"
+        executable: "bash -c 'tar -xf dataset.tar.xz && python peaklens-original-training_opt.py'"
+        container_runtime: "tensorflow/tensorflow:1.11.0-gpu"
       requirements:
-        - modak_endpoint: modak-instance
-        - dependency: tensorflow-image
+        - runtime: batch-app-runtime-hpc
+        - host: hlrs-testbed
 
-
-# -- Starting a transmission of dataset from S3 to GridFTP server  -- #
-    
-    # TODO: node types and instances shall be added
-
-# -- End of transmission of dataset from S3 to GridFTP server -- #
-
-
-### job configs
-    skyline-extraction-test-training-job-config:
-      type: sodalite.nodes.hpc.job.torque.preconfigured
+    snow-training-job:
+      type: sodalite.nodes.batch.Container.JobExecution
       properties:
-        name: skyline-extraction-training
-        script: { get_input: skyline-extraction-test-training-job-script }
-        workspace: ~/SkylineExtraction-training
-        enable_audit: true
+        job_name: "snow-training-job"
+        wall_time_limit: "12:00:00"
+        node_count: 1
+        process_count_per_node: 20
+        request_gpus: 1
+        queue: "gpu"
+        standard_output_file: "snow-training-job.out"
+        standard_error_file: "snow-training-job.err"
+        combine_stdout_stderr: true
+        copy_environment: true
+        request_event_notification: "abe"
+        email_address: tokmakov@hlrs.de
+        workspace: ~/radon-training
+        # generated by IaCBuilder
+        content: |
+          #PBS -S /bin/bash
+          ## START OF HEADER ## 
+          #PBS -N snow-training-job
+          #PBS -l walltime=12:00:00
+          #PBS -q gpu
+          #PBS -l nodes=1:ppn=20:gpus=1:gpu
+          #PBS -o skyline-extraction-training.out
+          #PBS -e skyline-extraction-training.err
+          #PBS -j oe
+          #PBS -m abe
+          #PBS -M tokmakov@hlrs.de
+          ## END OF HEADER ## 
+          cd $PBS_O_WORKDIR
+          export PATH=$PBS_O_WORKDIR:$PATH
+
+          file=set_default_hlrs_testbed.sh
+          if [ -f $file ] ; then rm $file; fi
+          wget --no-check-certificate https://www.dropbox.com/s/hpfcwwkd4zy52t9/set_default_hlrs_testbed.sh
+          chmod 755 set_default_hlrs_testbed.sh
+          source set_default_hlrs_testbed.sh
+          singularity exec --nv  $SINGULARITY_DIR/tensorflow_1.11.0-gpu.sif bash -c 'tar -xf dataset.tar.xz && python peaklens-original-training_opt.py'
+      attributes:
         env:
-          SINGULARITY_DIR: /mnt/nfs/home/kamil/singularity_images
+          SOME_VAR: "SOME_VALUE"
       requirements:
-        - host: hpc-wm-torque
-        - dependency: skyline-extraction-test-training-modak-job
-        # TODO: add dependency for data transfer
+        - application: snow-training-app
+        - runtime: batch-app-runtime-hpc
+        - host: hlrs-testbed
 
-### job workflow
-    skyline-extraction-test-training-job:
-      type: sodalite.nodes.hpc.job.torque
+    workflow-elem-1:
+      type: sodalite.nodes.workflow.Job
       requirements:
-        - host: hpc-wm-torque
-        - configured_job: skyline-extraction-test-training-job-config
+        - dependency: ConsS3Bucket_0
+        - execution: snow-training-job
+        - host: hlrs-testbed
 
-### job result
-    skyline-extraction-test-training-job-result:
-      type: sodalite.nodes.hpc.job.torque.result
+    workflow-elem-result-1:
+      type: sodalite.nodes.workflow.Result
       requirements:
-        - host: hpc-wm-torque
-        - job: skyline-extraction-test-training-job
+        - job: workflow-elem-1
+        - host: hlrs-testbed
 
+    PubsS3Bucket_0:
+      type: radon.nodes.datapipeline.destination.PubsS3Bucket
+      metadata:
+        x: "1042"
+        y: "63"
+        displayName: "PubsS3Bucket"
+      properties:
+        BucketName: "kml-test-bucket-result"
+        cred_file_path: "/home/kml/.aws/nifi_credentials"
+        schedulingStrategy: "EVENT_DRIVEN"
+        schedulingPeriodCRON: "* * * * * ?"
+        name: "sendToS3"
+        Region: "eu-central-1"
+      requirements:
+        - host:
+            node: Nifi_0
+            relationship: con_HostedOn_3
+            capability: host
+        - dependency: workflow-elem-result-1
 
-# -- Starting a transmission of results from GridFTP server to S3 -- #
-    
-    # TODO: node types and instances shall be added
-    # TODO: job results dependencies should be added
+    ConsumeGridFtp_0:
+      type: radon.nodes.datapipeline.source.ConsumeGridFtp
+      metadata:
+        x: "307"
+        y: "71"
+        displayName: "ConsumeGridFtp"
+      properties:
+        gridftp_port: 2811
+        intermediate_folder: "/tmp/nifi_gridftp_subscribe/"
+        schedulingStrategy: "EVENT_DRIVEN"
+        schedulingPeriodCRON: "* * * * * ?"
+        name: "receieveFromGFTP"
+        gridftp_user: "kamil"
+        gridftp_host: "sodalite-fe.hlrs.de"
+        gridftp_cert_path: "/home/kml/.globus"
+        gridftp_directory: "~/radon-training/protobufs/"
+      requirements:
+        - connectToPipeline:
+            node: PubsS3Bucket_0
+            relationship: con_ConnectNifiLocal_1
+            capability: ConnectToPipeline
+        - host:
+            node: Nifi_0
+            relationship: con_HostedOn_4
+            capability: host
 
-# -- End of transmission of results from GridFTP server to S3 -- #
+  # RADON relationships templates
+  relationship_templates:
+    con_HostedOn_0:
+      type: tosca.relationships.HostedOn
+    con_HostedOn_1:
+      type: tosca.relationships.HostedOn
+    con_HostedOn_2:
+      type: tosca.relationships.HostedOn
+    con_HostedOn_3:
+      type: tosca.relationships.HostedOn
+    con_HostedOn_4:
+      type: tosca.relationships.HostedOn
+    con_ConnectNifiLocal_0:
+      type: radon.relationships.datapipeline.ConnectNifiLocal
+    con_ConnectNifiLocal_1:
+      type: radon.relationships.datapipeline.ConnectNifiLocal
+
